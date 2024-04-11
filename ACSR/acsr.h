@@ -64,10 +64,6 @@ typedef struct transformations {
 
 } transformations;
 
-typedef struct data_structure {
-    float * values; 
-} data_structure;
-
 bool is_identical(data_structure *, transformations *, 
                     int , int , int , 
                     int , float);

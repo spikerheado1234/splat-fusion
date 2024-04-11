@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#include <cudnn.h>
 #include "../ACSR/acsr.h"
 
 
@@ -41,16 +40,6 @@ struct host_inps {
   int two_size;
   int ans_size;
 };
-
-#define CHECK_CUDNN_ERR(func) 	\
-{				\
-  cudnnStatus_t status = (func);                   \
-  if (status != CUDNN_STATUS_SUCCESS) {                                      \
-    printf("CUDNN API failed at line %d file: %s, with error: %s (%d)\n",      \
-           __LINE__,__FILE__, cudnnGetErrorString(status), status);           \
-    exit(EXIT_FAILURE);                                             \
-  }                                                                 \
-}
 
 #define CHECK_CUDA(func)                                            \
 {                                                                   \
