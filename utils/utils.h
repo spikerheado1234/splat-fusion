@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <cudnn.h>
-#include "../ACSR/layout/acsr.h"
+#include "../ACSR/acsr.h"
 
 
 // Custom data-structures for launching kernels.

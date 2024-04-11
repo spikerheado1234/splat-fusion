@@ -7,7 +7,7 @@
 #include <iostream>
 #include <algorithm>
 #include <map>
-#include "../../utils/utils.h"
+#include "../utils/utils.h"
 
 // Eigen is a c++ fast library for numerical algorithms.
 #include <Eigen/Dense>
