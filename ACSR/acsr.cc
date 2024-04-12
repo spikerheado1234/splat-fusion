@@ -15,39 +15,6 @@
 /* Checks that: ds[sparse(d_one, d_two, d_three, d_four)] == value. Will return true if coord is OOB as well
  * as a vacuous truthy value.
  */
-bool is_identical(data_structure *ds, transformations *transforms,
-                  int d_one, int d_two, int d_three,
-                  int d_four, float value)
-{
-
-    int dense_x = d_four;
-    int dense_y = d_three;
-    // We map these back to sparse-land.
-    assert(dense_y < transforms->dim_three // Smaller than the sequence length.
-           && dense_y >= 0);
-
-    vector lin_transform = transforms->linear_transformation[dense_y];
-    int nnz = transforms->nnzs[dense_y];
-
-    // Now we map this back to sparse_land.
-    int sparse_x = std::lround(lin_transform.x * dense_x + lin_transform.y);
-
-    if (sparse_x < 0 || sparse_x >= nnz)
-    {
-        return true;
-    }
-
-    bool truthy_val = abs(ds->values[((d_one * transforms->dim_two + d_two) * transforms->dim_three + d_three) * transforms->dim_four + sparse_x] - value) <= 1e-3;
-
-    // We print the incorrect values out here.
-    if (!truthy_val)
-    {
-        printf("Failed truthy val. Sddmm output: %.8f, Blas Output: %.8f, linear_transform.x: %.5f, linear_transform.y: %.8f, dense_x: %d, dense_y: %d\n", ds->values[((d_one * transforms->dim_two + d_two) * transforms->dim_three + d_three) * transforms->dim_four + sparse_x],
-               value, lin_transform.x, lin_transform.y, dense_x, dense_y);
-    }
-
-    return truthy_val;
-}
 
 void populate_column_metadata(transformations *transforms, int block_height)
 {

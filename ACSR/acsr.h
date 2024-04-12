@@ -64,9 +64,9 @@ typedef struct transformations {
 
 } transformations;
 
-bool is_identical(data_structure *, transformations *, 
-                    int , int , int , 
-                    int , float);
+//bool is_identical(data_structure *, transformations *, 
+//                    int , int , int , 
+//                    int , float);
 
 transformations* generate_blocked_ds(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param);
 transformations* generate_windowed_ds(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param);

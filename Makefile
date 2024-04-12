@@ -3,7 +3,7 @@ dir = $(shell pwd)
 VPATH = $(dir)/utils/ $(dir)/ACSR/ $(dir)/experimental/windowed/
 
 ## The path to eigen may be different depending on the machine you are working on. PLEASE CHANGE ACCORDINGLY. ##
-CUDAFLAGS = -O3 -I /srv/local/shared/eigen --expt-relaxed-constexpr -std=c++14
+CUDAFLAGS = -O3 -I /home/selin/splat-fusion/eigen --expt-relaxed-constexpr -std=c++14
 
 windowed : windowed.o acsr.o utils.o
 	nvcc $(CUDAFLAGS) $^ -o windowed_exec
