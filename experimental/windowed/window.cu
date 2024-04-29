@@ -8,9 +8,7 @@ __global__ void windowed_fused(float * queries, float * keys, float * output) {
 }
 
 
-
 int main() {
-
 
     return 0;
 }
