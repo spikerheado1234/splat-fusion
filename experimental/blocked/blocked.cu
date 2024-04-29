@@ -4,11 +4,12 @@
 
 #define BLOCK_SIZE_X 16 // This is b_c. -> this is also our coarsening factor.
 #define BLOCK_SIZE_Y 128 // This is b_r.
-#define TILE_DIM 8 // This should be BLOCK_SIZE_Y / BLOCK_SIZE_X as per regular joint-register shared memory tiling.
+#define INNER_DIM 8 // This is the inner dim we use in all the mat-muls. 
+// Ensure that INNER_DIM is always smaller than Min(BLOCK_SIZE_X, BLOCK_SIZE_Y).
 
 // Queries -> row-major, Keys^T -> row-major, Values -> row-major. [batch, num_heads, seq_length, hidden_dim].
 template<class T>
-__global__ void blocked(T* queries, T* keys, T* values, T* answer, int sparsity_param, int batch, 
+__global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
                             int num_heads, int seq_length, int hidden_dim) {
 
     #define idx_queries(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
@@ -18,48 +19,54 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, int sparsity_
     int batch = blockIdx.z / batch;
     int head = blockIdx.z % batch;
 
-    // This is the query index the current thread will load.
-    int row_y = blockIdx.y * blockDim.y + threadIdx.y;
+    int tx = threadIdx.x; int ty = threadIdx.y;
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int row = by * gridDim.y + ty; int col = bx * gridDim.x + tx;
 
     // THis is for the first inner loop, computing the QiKj product.
-    T queries_regs[TILE_DIM];
-    T qk_answer_regs[TILE_DIM];
-    __shared__ T keys_shmem[TILE_DIM][BLOCK_SIZE_X];
+    __shared__ T queries_shmem[BLOCK_SIZE_Y][INNER_DIM];
+    __shared__ T keys_shmem[INNER_DIM][BLOCK_SIZE_X];
+    __shared__ T answer_shmem[BLOCK_SIZE_Y][BLOCK_SIZE_X];
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
-    for (int j = 0; j < ceil(float(seq_length) / float(TILE_DIM)); j++) {
+    for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
 
         // Step 1: Compute S_{i,j} -> This is Q_i@K_j. We must tile this matrix multiplication.
         //          The queries will be in registers, the keys will be in shmem.
 
+        __syncthreads();
+
         for (int i = 0; i < ceil(float(hidden_dim) / float(BLOCK_SIZE_X)); i++) {
-
             // Let's first load the queries.
-            for (int coarsen = 0; coarsen < BLOCK_SIZE_X; coarsen++) {
-                queries_regs[coarsen] = queries_regs[idx_queries(batch, row_y, head, j*TILE_DIM+coarsen)];
+            if (row < seq_length && INNER_DIM*i+tx < hidden_dim && tx < INNER_DIM) {
+                queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*i+tx)];
+            } else if (tx < INNER_DIM) {
+                queries_shmem[ty][tx] = 0;
             }
 
-            __syncthreads();
-            
             // Next, we collaboratively load the keys.
-            int row_shmem = threadIdx.x / TILE_DIM;
-            int col_shmem = threadIdx.x % TILE_DIM; 
-            if (&& row_shmem+j*TILE_DIM < hidden_dim) {
-                keys_shmem[row_shmem][col_shmem] = keys[idx_keys(batch, col_shmem+, 
-                                                                    head, row_shmem+j*TILE_DIM)]; // This looks a little incorrect.
-            } else {
-                keys_shmem[row_shmem][col_shmem] = 0;
+            if (col < seq_length && INNER_DIM*i+ty < hidden_dim) {
+                keys_shmem[ty][tx] = keys[idx_keys(batch, col, head, INNER_DIM*i+ty)];
+            } else if (ty < INNER_DIM) {
+                keys_shmem[ty][tx] = 0;
             }
-
-            __syncthreads();
 
             // We do the matrix_multiplication here.
-
-
-            // Write to the answers here.
-            for (int coarsen=0; coarsen < ) {
-
+            for (int k = 0; k < INNER_DIM; k++) {
+                answer_shmem[ty][tx] += queries_shmem[ty][k] * keys_shmem[k][tx];
             }
+
+            __syncthreads();
+
+            // Over here, we compute ~m_{i,j}.
+
+            // Compute ~P_{i,j}.
+
+            // Compute ~l_{i,j}.
+
+            // Compute O_i -> write to HBM.
+
+            // Compute l_{i,j} <- ~l_{i,j} and m_i 
 
         }
 
