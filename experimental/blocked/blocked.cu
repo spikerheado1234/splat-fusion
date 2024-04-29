@@ -33,11 +33,9 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
         // Step 1: Compute S_{i,j} -> This is Q_i@K_j. We must tile this matrix multiplication.
         //          The queries will be in registers, the keys will be in shmem.
-
-        __syncthreads();
-
         for (int i = 0; i < ceil(float(hidden_dim) / float(BLOCK_SIZE_X)); i++) {
             // Let's first load the queries.
+            __syncthreads();
             if (row < seq_length && INNER_DIM*i+tx < hidden_dim && tx < INNER_DIM) {
                 queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*i+tx)];
             } else if (tx < INNER_DIM) {
@@ -58,22 +56,21 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
             __syncthreads();
 
-            // Over here, we compute ~m_{i,j}.
-
-            // Compute ~P_{i,j}.
-
-            // Compute ~l_{i,j}.
-
-            // Compute O_i -> write to HBM.
-
-            // Compute l_{i,j} <- ~l_{i,j} and m_i 
 
         }
 
+        // Over here, we compute ~m_{i,j}.
+
+        // Compute ~P_{i,j}.
+
+        // Compute ~l_{i,j}.
+
+        // Compute O_i -> write to HBM.
+
+        // Compute l_{i,j} <- ~l_{i,j} and m_i 
+
     }
 }
-
-
 
 // Now, BLOCK_SIZE_X is b_c whilst BLOCK_SIZE_Y is b_r in the flash-attention paper:
 //     https://arxiv.org/pdf/2205.14135.pdf
