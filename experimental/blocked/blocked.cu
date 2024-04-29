@@ -3,7 +3,7 @@
 #include "../../utils.h"
 
 #define BLOCK_SIZE_X 16 // This is b_c. -> this is also our coarsening factor.
-#define BLOCK_SIZE_Y 128 // This is b_r.
+#define BLOCK_SIZE_Y 16 // This is b_r.
 #define INNER_DIM 8 // This is the inner dim we use in all the mat-muls. 
 // Ensure that INNER_DIM is always smaller than Min(BLOCK_SIZE_X, BLOCK_SIZE_Y).
 
@@ -15,6 +15,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
     #define idx_queries(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
     #define idx_keys(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
     #define idx_values(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
+    #define idx_output(i,j,k,l) (((i)*num_heads+(j))*seq_length+(k))*seq_length+(l)
 
     int batch = blockIdx.z / batch;
     int head = blockIdx.z % batch;
@@ -26,25 +27,47 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
     // THis is for the first inner loop, computing the QiKj product.
     __shared__ T queries_shmem[BLOCK_SIZE_Y][INNER_DIM];
     __shared__ T keys_shmem[INNER_DIM][BLOCK_SIZE_X];
+    __shared__ T v_j[BLOCK_SIZE_X][BLOCK_SIZE_Y];
+    __shared__ T o_i[BLOCK_SIZE_X][BLOCK_SIZE_Y];
     __shared__ T answer_shmem[BLOCK_SIZE_Y][BLOCK_SIZE_X];
+    __shared__ T m_i[BLOCK_SIZE_Y]; // TODO, initialize this to -inf.
+    __shared__ T m_tilde_ij[BLOCK_SIZE_Y]; // TODO, initialize this to -inf.
+    __shared__ T m_new_i[BLOCK_SIZE_Y];
+    __shared__ T l[BLOCK_SIZE_Y] = {0};
+    __shared__ T l_i[BLOCK_SIZE_Y] = {0};
+    __shared__ T l_tilde_ij[BLOCK_SIZE_Y] = {0};
+    __shared__ T l_new_i[BLOCK_SIZE_Y] = {0};
+
+    // Initialization of: l_i, m_i. TODO: initialize O_i.
+    if (tx == 0 && ty+blockDim.y*blockIdx.y < seq_length) {
+        l_i[ty] = l[ty+blockDim.y*blockIdx.y];
+        m_i[ty] = m[ty+blockDim.y*blockIdx.y];
+    } else if (tx == 0) { // TODO, figure out if this is necessary. Don't think it is necessary. 
+        l_i[ty] = 0;
+        m_i[ty] = 0;
+    }
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
     for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
 
+        // We first load V_j and O_i.
+
+        // Loading V_j.
+
         // Step 1: Compute S_{i,j} -> This is Q_i@K_j. We must tile this matrix multiplication.
         //          The queries will be in registers, the keys will be in shmem.
-        for (int i = 0; i < ceil(float(hidden_dim) / float(BLOCK_SIZE_X)); i++) {
+        for (int a = 0; a < ceil(float(hidden_dim) / float(BLOCK_SIZE_X)); a++) {
             // Let's first load the queries.
             __syncthreads();
-            if (row < seq_length && INNER_DIM*i+tx < hidden_dim && tx < INNER_DIM) {
-                queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*i+tx)];
+            if (row < seq_length && INNER_DIM*a+tx < hidden_dim && tx < INNER_DIM) {
+                queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*a+tx)];
             } else if (tx < INNER_DIM) {
                 queries_shmem[ty][tx] = 0;
             }
 
             // Next, we collaboratively load the keys.
-            if (col < seq_length && INNER_DIM*i+ty < hidden_dim) {
-                keys_shmem[ty][tx] = keys[idx_keys(batch, col, head, INNER_DIM*i+ty)];
+            if (col < seq_length && INNER_DIM*a+ty < hidden_dim) {
+                keys_shmem[ty][tx] = keys[idx_keys(batch, col, head, INNER_DIM*a+ty)];
             } else if (ty < INNER_DIM) {
                 keys_shmem[ty][tx] = 0;
             }
@@ -55,20 +78,60 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
             }
 
             __syncthreads();
-
-
         }
 
+        // Line 10 in algorithm.
         // Over here, we compute ~m_{i,j}.
+        if (tx == 0) {
+            for (int k = 0; k < BLOCK_SIZE_X; k++) {
+                m_tilde_ij[ty] = fmaxf(answer_shmem[ty][k], m_tilde_ij[ty]);
+            }
+        }
 
-        // Compute ~P_{i,j}.
+        // Over here, we compute ~P_{i,j}.
+        answer_shmem[ty][tx] = expf(answer_shmem[ty][tx] - m_tilde_ij[ty]);
 
-        // Compute ~l_{i,j}.
+        // Over here, we compute ~l_{i,j}.
+        if (tx == 0) {
+            for (int k = 0; k < BLOCK_SIZE_X; k++) {
+                l_tilde_ij[ty] += answer_shmem[ty][k];
+            }
+        }
 
+        // Line 11.
+        // Compute m^{new}_{i}.
+        if (tx == 0) {
+            m_new_i[ty] = fmaxf(m_i[ty], m_tilde_ij[ty]);
+        }
+
+        // Compute l^{new}_{i}
+        if (tx == 0) {
+            l_new_i[ty] = expf(m_i[ty]-m_new_i[ty])*l_i[ty] + expf(m_tilde_ij[ty]-m_new_i[ty])*l_tilde_ij[ty];
+        }
+
+        // Line 12.
         // Compute O_i -> write to HBM.
+        if (row < seq_length && col < seq_length) {
+            T temp_answer = 0;
+            for (int a = 0; a < BLOCK_SIZE_X; a++) {
+                temp_answer += answer_shmem[ty][a] * v_j[a][tx];
+            }
 
-        // Compute l_{i,j} <- ~l_{i,j} and m_i 
+            temp_answer *= expf(m_tilde_ij[ty] - m_new_i[ty]);
 
+            temp_answer += l_i[ty]*expf(m_i[ty] - m_new_i[ty])o_i[ty][tx];
+            
+            temp_answer /= l_new_i[ty]; // TODO, maybe division by 0.
+
+            answer[idx_output(batch, head, row, col)] = temp_answer;
+        }
+
+        // Line 13.
+        // Compute l_i <- l_i^{new} and m_i <- m_i^{new}
+        if (tx == 0) {
+            l_i[ty] = l_new_i[ty]
+            m_i[ty] = m_new_i[ty]
+        }
     }
 }
 
