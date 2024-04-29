@@ -22,7 +22,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
     int tx = threadIdx.x; int ty = threadIdx.y;
     int bx = blockIdx.x; int by = blockIdx.y;
-    int row = by * gridDim.y + ty; int col = bx * gridDim.x + tx;
+    int row = by * blockDim.y + ty; int col = bx * blockDim.x + tx;
 
     // THis is for the first inner loop, computing the QiKj product.
     __shared__ T queries_shmem[BLOCK_SIZE_Y][INNER_DIM];
@@ -47,29 +47,36 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
         m_i[ty] = 0;
     }
 
+    // Load O_i. This is indepedent of the outer loop (with induction variable j in original algorithm).
+
     // Now, we parallelize over the inner loop, but still retain the outer loop.
     for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
 
-        // We first load V_j and O_i.
+        // We first load V_j. 
 
-        // Loading V_j.
+        // Loading V_j. We transpose the x and y dimension for loading over here.
+        if (tx+blockDim.x*bx < seq_length && j*BLOCK_SIZE_X+ty< hidden_dim) {
+            v_j[tx][ty] = values[idx_values(batch, tx+blockDim.x*bx, head, j*BLOCK_SIZE_X+ty)];
+        } else {
+            v_j[tx][ty] = 0;
+        }
 
         // Step 1: Compute S_{i,j} -> This is Q_i@K_j. We must tile this matrix multiplication.
         //          The queries will be in registers, the keys will be in shmem.
         for (int a = 0; a < ceil(float(hidden_dim) / float(BLOCK_SIZE_X)); a++) {
             // Let's first load the queries.
             __syncthreads();
-            if (row < seq_length && INNER_DIM*a+tx < hidden_dim && tx < INNER_DIM) {
+            if (row < seq_length && INNER_DIM*a+tx < hidden_dim) {
                 queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*a+tx)];
-            } else if (tx < INNER_DIM) {
+            } else if (tx < INNER_DIM) { // This is to capture a malicious boundary case: a thread id is < INNER_DIM, but exceeds hidden_dim.
                 queries_shmem[ty][tx] = 0;
             }
 
             // Next, we collaboratively load the keys.
-            if (col < seq_length && INNER_DIM*a+ty < hidden_dim) {
-                keys_shmem[ty][tx] = keys[idx_keys(batch, col, head, INNER_DIM*a+ty)];
-            } else if (ty < INNER_DIM) {
-                keys_shmem[ty][tx] = 0;
+            if (tx+blockDim.x*bx < seq_length && INNER_DIM*a+ty < hidden_dim) {
+                keys_shmem[tx][ty] = keys[idx_keys(batch, tx+blockDim.x*bx, head, INNER_DIM*a+ty)];
+            } else if (ty < INNER_DIM) { // Same as the above.
+                keys_shmem[tx][ty] = 0;
             }
 
             // We do the matrix_multiplication here.
@@ -145,7 +152,8 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
     // Naive spawning.
     assert(hidden_dim % num_heads == 0 && "Incorrect hidden dimension size");
     int head_hidden_dim = hidden_dim / num_heads;
-    Dim3 GridSize(ceil(float(head_hidden_dim) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
+    // This is an interesting way to parallelise.
+    Dim3 GridSize(ceil(float(seq_length) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
     Dim3 BlockSize(BLOCK_SIZE_X, BLOCK_SIZE_Y, 1);
 
     blocked<float><<<GridSize,BlockSize>>>blocked(queries_dev, keys_dev, values_dev, 
