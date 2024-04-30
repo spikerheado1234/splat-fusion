@@ -29,8 +29,8 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     int head_hidden_dim = hidden_dim / num_heads;
 
     // For much better memory coalescing, we need to index as follows:
-    #define idx_queries(b,s,n,h) (((b)*num_heads+(n))*head_hidden_dim+(h))*seq_length+(s)
-    #define idx_keys(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
+    #define idx_queries(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
+    #define idx_keys(b,s,n,h) (((b)*num_heads+(n))*head_hidden_dim+(h))*seq_length+(s)
     #define idx_values(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
     #define idx_output(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
 
