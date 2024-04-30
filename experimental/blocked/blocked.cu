@@ -15,7 +15,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
     #define idx_queries(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
     #define idx_keys(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
     #define idx_values(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
-    #define idx_output(i,j,k,l) (((i)*num_heads+(j))*seq_length+(k))*seq_length+(l)
+    #define idx_output(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
 
     int batch = blockIdx.z / batch;
     int head = blockIdx.z % batch;
@@ -48,6 +48,13 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
     }
 
     // Load O_i. This is indepedent of the outer loop (with induction variable j in original algorithm).
+
+    // Collaboratively load O_i.
+    if (row < seq_length && col < hidden_dim) {
+        o_i[ty][tx] = answer[idx_output(batch, row, head, col)];
+    } else {
+        o_i[ty][tx] = 0;
+    }
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
     for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
@@ -118,7 +125,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
         // Line 12.
         // Compute O_i -> write to HBM.
-        if (row < seq_length && col < seq_length) {
+        if (row < seq_length && col < hidden_dim) {
             T temp_answer = 0;
             for (int a = 0; a < BLOCK_SIZE_X; a++) {
                 temp_answer += answer_shmem[ty][a] * v_j[a][tx];
@@ -126,9 +133,11 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
             temp_answer *= expf(m_tilde_ij[ty] - m_new_i[ty]);
 
-            temp_answer += l_i[ty]*expf(m_i[ty] - m_new_i[ty])o_i[ty][tx];
+            temp_answer += l_i[ty]*expf(m_i[ty] - m_new_i[ty])*o_i[ty][tx];
             
-            temp_answer /= l_new_i[ty]; // TODO, maybe division by 0.
+            if (l_new_i[ty]) {
+                temp_answer /= l_new_i[ty]; 
+            }
 
             answer[idx_output(batch, head, row, col)] = temp_answer;
         }
@@ -136,8 +145,8 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
         // Line 13.
         // Compute l_i <- l_i^{new} and m_i <- m_i^{new}
         if (tx == 0) {
-            l_i[ty] = l_new_i[ty]
-            m_i[ty] = m_new_i[ty]
+            l_i[ty] = l_new_i[ty];
+            m_i[ty] = m_new_i[ty];
         }
     }
 }
