@@ -180,7 +180,8 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
     assert(hidden_dim % num_heads == 0 && "Incorrect hidden dimension size");
     int head_hidden_dim = hidden_dim / num_heads;
     // This is an interesting way to parallelise.
-    dim3 GridSize(ceil(float(seq_length) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
+    //dim3 GridSize(ceil(float(seq_length) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
+    dim3 GridSize(1, ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads); // Let's see if this is correct.
     dim3 BlockSize(BLOCK_SIZE_X, BLOCK_SIZE_Y, 1);
 
     blocked_kernel<float><<<GridSize,BlockSize>>>(queries_dev, keys_dev, values_dev, 
