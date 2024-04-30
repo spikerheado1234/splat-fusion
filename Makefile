@@ -3,7 +3,7 @@ dir = $(shell pwd)
 VPATH = $(dir)/utils/ $(dir)/ACSR/ $(dir)/experimental/windowed/ $(dir)/experimental/blocked/
 
 ## The path to eigen may be different depending on the machine you are working on. PLEASE CHANGE ACCORDINGLY. ##
-CUDAFLAGS = -g -G -I /srv/local/shared/eigen --expt-relaxed-constexpr -std=c++14
+CUDAFLAGS = -O3 -I /srv/local/shared/eigen --expt-relaxed-constexpr -std=c++14
 
 ## Recipes for the blocked pattern.
 blocked : blocked.o acsr.o utils.o

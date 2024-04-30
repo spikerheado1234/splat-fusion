@@ -4,6 +4,7 @@
 #include "cuda_runtime.h"
 #include <cstring>
 #include <cassert>
+#include <iostream>
 
 #define BLOCK_SIZE_X 16 // This is b_c. -> this is also our coarsening factor.
 #define BLOCK_SIZE_Y 16 // This is b_r.
@@ -179,7 +180,7 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
 
 int main() {
 
-    int batch = 1; int seq_length = 1024; int num_heads = 1; int hidden_dim = 1024; int sparsity_param = 128;
+    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 128;
     int tensor_size = batch * seq_length * hidden_dim;
 
     float * queries = new float[tensor_size]; float * keys = new float [tensor_size]; float * values = new float[tensor_size];
@@ -212,10 +213,15 @@ int main() {
     cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice);
 
     cudaDeviceSynchronize();
+    auto time_start = time_now();
     blocked_launcher(queries_dev, keys_dev, values_dev, 
                         answer_dev,l_dev,m_dev, batch, num_heads, seq_length, 
                             hidden_dim, sparsity_param);
     cudaDeviceSynchronize();
+    auto time_elapsed = time_elapsed_us(time_start);
+    std::cout << "Time elapsed: " << time_elapsed << std::endl;
+    auto err = cudaGetLastError();
+    std::cout << cudaGetErrorString(err) << std::endl;
 
     return 0;
 }
