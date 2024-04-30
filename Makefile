@@ -1,9 +1,15 @@
 dir = $(shell pwd)
 
-VPATH = $(dir)/utils/ $(dir)/ACSR/ $(dir)/experimental/windowed/
+VPATH = $(dir)/utils/ $(dir)/ACSR/ $(dir)/experimental/windowed/ $(dir)/experimental/blocked
 
 ## The path to eigen may be different depending on the machine you are working on. PLEASE CHANGE ACCORDINGLY. ##
-CUDAFLAGS = -O3 -I /srv/local/shared/eigen --expt-relaxed-constexpr -std=c++14
+CUDAFLAGS = -O3 -I /usr/include/eigen3 --expt-relaxed-constexpr -std=c++14
+
+blocked : blocked.o utils.o 
+	nvcc $(CUDAFLAGS) $^ -o blocked
+
+blocked.o : blocked.cu
+	nvcc $(CUDAFLAGS) -c $< -o blocked.o
 
 windowed : windowed.o acsr.o utils.o
 	nvcc $(CUDAFLAGS) $^ -o windowed_exec
@@ -15,7 +21,7 @@ windowed.o : window.cu
 acsr.o : acsr.cc
 	nvcc $(CUDAFLAGS) -c $< -o acsr.o
 
-utils.o : utils.cc 
+utils.o : utils.cc utils.h
 	nvcc $(CUDAFLAGS) -c $< -o utils.o
 
 clean : 

@@ -1,6 +1,6 @@
 #include "blocked.h"
 #include <cmath>
-#include "../../utils.h"
+#include "../../utils/utils.h"
 
 #define BLOCK_SIZE_X 16 // This is b_c. -> this is also our coarsening factor.
 #define BLOCK_SIZE_Y 16 // This is b_r.
