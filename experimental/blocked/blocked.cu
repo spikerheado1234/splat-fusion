@@ -11,6 +11,16 @@
 #define INNER_DIM 8 // This is the inner dim we use in all the mat-muls. 
 // Ensure that INNER_DIM is always smaller than Min(BLOCK_SIZE_X, BLOCK_SIZE_Y).
 
+#define CHECK_CUDA(func)                                            \
+{                                                                   \
+  cudaError_t status = (func);                                      \
+  if (status != cudaSuccess) {                                      \
+    printf("CUDA API failed at line %d file: %s, with error: %s (%d)\n",      \
+           __LINE__,__FILE__, cudaGetErrorString(status), status);           \
+    exit(EXIT_FAILURE);                                             \
+  }                                                                 \
+}
+
 // Queries -> row-major, Keys^T -> row-major, Values -> row-major. [batch, num_heads, seq_length, hidden_dim].
 template<class T>
 __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
@@ -47,13 +57,13 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     if (tx == 0 && ty+blockDim.y*blockIdx.y < seq_length) {
         l_i[ty] = l[ty+blockDim.y*blockIdx.y];
         m_i[ty] = m[ty+blockDim.y*blockIdx.y];
-	l_tilde_ij[ty] = 0;
-	l_new_i[ty] = 0;
+	    l_tilde_ij[ty] = 0;
+	    l_new_i[ty] = 0;
     } else if (tx == 0) { // TODO, figure out if this is necessary. Don't think it is necessary. 
         l_i[ty] = 0;
         m_i[ty] = 0;
-	l_tilde_ij[ty] = 0;
-	l_new_i[ty] = 0;
+	    l_tilde_ij[ty] = 0;
+	    l_new_i[ty] = 0;
     }
 
     // Load O_i. This is indepedent of the outer loop (with induction variable j in original algorithm).
@@ -197,20 +207,20 @@ int main() {
 
     // GPU memory.
     float * queries_dev; float * keys_dev; float * values_dev; float * answer_dev; float * l_dev; float * m_dev;
-    cudaMalloc(&queries_dev, sizeof(float)*tensor_size);
-    cudaMalloc(&keys_dev, sizeof(float)*tensor_size);
-    cudaMalloc(&values_dev, sizeof(float)*tensor_size);
-    cudaMalloc(&answer_dev, sizeof(float)*tensor_size);
-    cudaMalloc(&l_dev, sizeof(float)*seq_length);
-    cudaMalloc(&m_dev, sizeof(float)*seq_length);
+    CHECK_CUDA(cudaMalloc(&queries_dev, sizeof(float)*tensor_size));
+    CHECK_CUDA(cudaMalloc(&keys_dev, sizeof(float)*tensor_size));
+    CHECK_CUDA(cudaMalloc(&values_dev, sizeof(float)*tensor_size));
+    CHECK_CUDA(cudaMalloc(&answer_dev, sizeof(float)*tensor_size));
+    CHECK_CUDA(cudaMalloc(&l_dev, sizeof(float)*seq_length));
+    CHECK_CUDA(cudaMalloc(&m_dev, sizeof(float)*seq_length));
 
     // Copy tensors to GPU.
-    cudaMemcpy(queries_dev,queries, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(keys_dev,keys, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(values_dev,values, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(answer_dev,answer, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(l_dev,l, sizeof(float)*seq_length, cudaMemcpyHostToDevice);
-    cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice);
+    CHECK_CUDA(cudaMemcpy(queries_dev,queries, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(keys_dev,keys, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(values_dev,values, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(answer_dev,answer, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(l_dev,l, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
 
     cudaDeviceSynchronize();
     auto time_start = time_now();
