@@ -64,5 +64,17 @@ typedef struct transformations {
 
 } transformations;
 
+//bool is_identical(data_structure *, transformations *, 
+//                    int , int , int , 
+//                    int , float);
+
+transformations* generate_blocked_ds(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param);
+transformations* generate_windowed_ds(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param);
+transformations *generate_strided_ds(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param);
+transformations * generate_strided_ds_micro(int batch, int seq_length, int num_heads, int hidden_dimension, int sparsity_param); 
+
+void pretty_print(transformations* transforms);
+void populate_column_metadata(transformations * transforms, int block_height);
+int populate_strided_metadata(transformations* t, int block_size);
 
 #endif
