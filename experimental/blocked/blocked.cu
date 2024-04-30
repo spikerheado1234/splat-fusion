@@ -1,6 +1,9 @@
-#include "blocked.h"
+#include "blocked.cuh"
 #include <cmath>
-#include "../../utils.h"
+#include "../../utils/utils.h"
+#include "cuda_runtime.h"
+#include <cstring>
+#include <cassert>
 
 #define BLOCK_SIZE_X 16 // This is b_c. -> this is also our coarsening factor.
 #define BLOCK_SIZE_Y 16 // This is b_r.
@@ -9,16 +12,17 @@
 
 // Queries -> row-major, Keys^T -> row-major, Values -> row-major. [batch, num_heads, seq_length, hidden_dim].
 template<class T>
-__global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
+__global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
                             int num_heads, int seq_length, int hidden_dim) {
 
-    #define idx_queries(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
-    #define idx_keys(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
-    #define idx_values(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
-    #define idx_output(b,s,n,h) (((b)*num_heads+(s))*seq_length+(n))*hidden_dim+(h)
+    int head_hidden_dim = hidden_dim / num_heads;
+    #define idx_queries(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
+    #define idx_keys(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
+    #define idx_values(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
+    #define idx_output(b,s,n,h) (((b)*num_heads+(n))*seq_length+(s))*head_hidden_dim+(h)
 
-    int batch = blockIdx.z / batch;
-    int head = blockIdx.z % batch;
+    int batch_num = blockIdx.z / batch;
+    int head_num = blockIdx.z % batch;
 
     int tx = threadIdx.x; int ty = threadIdx.y;
     int bx = blockIdx.x; int by = blockIdx.y;
@@ -28,30 +32,34 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
     __shared__ T queries_shmem[BLOCK_SIZE_Y][INNER_DIM];
     __shared__ T keys_shmem[INNER_DIM][BLOCK_SIZE_X];
     __shared__ T v_j[BLOCK_SIZE_X][BLOCK_SIZE_Y];
-    __shared__ T o_i[BLOCK_SIZE_X][BLOCK_SIZE_Y];
+    __shared__ T o_i[BLOCK_SIZE_Y][BLOCK_SIZE_X];
     __shared__ T answer_shmem[BLOCK_SIZE_Y][BLOCK_SIZE_X];
-    __shared__ T m_i[BLOCK_SIZE_Y]; // TODO, initialize this to -inf.
-    __shared__ T m_tilde_ij[BLOCK_SIZE_Y]; // TODO, initialize this to -inf.
+    __shared__ T m_i[BLOCK_SIZE_Y]; 
+    __shared__ T m_tilde_ij[BLOCK_SIZE_Y]; 
     __shared__ T m_new_i[BLOCK_SIZE_Y];
-    __shared__ T l[BLOCK_SIZE_Y] = {0};
-    __shared__ T l_i[BLOCK_SIZE_Y] = {0};
-    __shared__ T l_tilde_ij[BLOCK_SIZE_Y] = {0};
-    __shared__ T l_new_i[BLOCK_SIZE_Y] = {0};
+    //__shared__ T l[BLOCK_SIZE_Y] = {0}; // Question, why do we even need this?
+    __shared__ T l_i[BLOCK_SIZE_Y];
+    __shared__ T l_tilde_ij[BLOCK_SIZE_Y];
+    __shared__ T l_new_i[BLOCK_SIZE_Y]; 
 
     // Initialization of: l_i, m_i. TODO: initialize O_i.
     if (tx == 0 && ty+blockDim.y*blockIdx.y < seq_length) {
         l_i[ty] = l[ty+blockDim.y*blockIdx.y];
         m_i[ty] = m[ty+blockDim.y*blockIdx.y];
+	l_tilde_ij[ty] = 0;
+	l_new_i[ty] = 0;
     } else if (tx == 0) { // TODO, figure out if this is necessary. Don't think it is necessary. 
         l_i[ty] = 0;
         m_i[ty] = 0;
+	l_tilde_ij[ty] = 0;
+	l_new_i[ty] = 0;
     }
 
     // Load O_i. This is indepedent of the outer loop (with induction variable j in original algorithm).
 
     // Collaboratively load O_i.
-    if (row < seq_length && col < hidden_dim) {
-        o_i[ty][tx] = answer[idx_output(batch, row, head, col)];
+    if (row < seq_length && col < head_hidden_dim) {
+        o_i[ty][tx] = answer[idx_output(batch_num, row, head_num, col)];
     } else {
         o_i[ty][tx] = 0;
     }
@@ -63,7 +71,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 
         // Loading V_j. We transpose the x and y dimension for loading over here.
         if (tx+blockDim.x*bx < seq_length && j*BLOCK_SIZE_X+ty< hidden_dim) {
-            v_j[tx][ty] = values[idx_values(batch, tx+blockDim.x*bx, head, j*BLOCK_SIZE_X+ty)];
+            v_j[tx][ty] = values[idx_values(batch_num, tx+blockDim.x*bx, head_num, j*BLOCK_SIZE_X+ty)];
         } else {
             v_j[tx][ty] = 0;
         }
@@ -74,14 +82,14 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
             // Let's first load the queries.
             __syncthreads();
             if (row < seq_length && INNER_DIM*a+tx < hidden_dim) {
-                queries_shmem[ty][tx] = queries[idx_queries(batch, row, head, INNER_DIM*a+tx)];
+                queries_shmem[ty][tx] = queries[idx_queries(batch_num, row, head_num, INNER_DIM*a+tx)];
             } else if (tx < INNER_DIM) { // This is to capture a malicious boundary case: a thread id is < INNER_DIM, but exceeds hidden_dim.
                 queries_shmem[ty][tx] = 0;
             }
 
             // Next, we collaboratively load the keys.
             if (tx+blockDim.x*bx < seq_length && INNER_DIM*a+ty < hidden_dim) {
-                keys_shmem[tx][ty] = keys[idx_keys(batch, tx+blockDim.x*bx, head, INNER_DIM*a+ty)];
+                keys_shmem[tx][ty] = keys[idx_keys(batch_num, tx+blockDim.x*bx, head_num, INNER_DIM*a+ty)];
             } else if (ty < INNER_DIM) { // Same as the above.
                 keys_shmem[tx][ty] = 0;
             }
@@ -139,7 +147,7 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
                 temp_answer /= l_new_i[ty]; 
             }
 
-            answer[idx_output(batch, head, row, col)] = temp_answer;
+            answer[idx_output(batch_num, row, head_num, col)] = temp_answer;
         }
 
         // Line 13.
@@ -154,29 +162,32 @@ __global__ void blocked(T* queries, T* keys, T* values, T* answer, T * l, T * m,
 // Now, BLOCK_SIZE_X is b_c whilst BLOCK_SIZE_Y is b_r in the flash-attention paper:
 //     https://arxiv.org/pdf/2205.14135.pdf
 template<class T>
-void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev, 
-                        int batch, int num_heads, int seq_length, int hidden_dim, int sparsity_param) {
+void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev, T * l_dev, T* m_dev, int batch, int num_heads, int seq_length, int hidden_dim, int sparsity_param) {
 
     // Now, what's the size of of O? seq_length X hidden_dim.
     // Naive spawning.
     assert(hidden_dim % num_heads == 0 && "Incorrect hidden dimension size");
     int head_hidden_dim = hidden_dim / num_heads;
     // This is an interesting way to parallelise.
-    Dim3 GridSize(ceil(float(seq_length) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
-    Dim3 BlockSize(BLOCK_SIZE_X, BLOCK_SIZE_Y, 1);
+    dim3 GridSize(ceil(float(seq_length) / float(BLOCK_SIZE_X)), ceil(float(seq_length) / float(BLOCK_SIZE_Y)), batch*num_heads);
+    dim3 BlockSize(BLOCK_SIZE_X, BLOCK_SIZE_Y, 1);
 
-    blocked<float><<<GridSize,BlockSize>>>blocked(queries_dev, keys_dev, values_dev, 
-                                                    answer_dev, sparsity_param, batch, num_heads, 
+    blocked_kernel<float><<<GridSize,BlockSize>>>(queries_dev, keys_dev, values_dev, 
+                                                    answer_dev, l_dev, m_dev, sparsity_param, batch, num_heads, 
                                                     seq_length, hidden_dim); 
 }
 
 int main() {
 
-    int batch = 1; int seq_length = 10; int num_heads = 1; int hidden_dim = 10; int sparsity_param = 5;
+    int batch = 1; int seq_length = 1024; int num_heads = 1; int hidden_dim = 1024; int sparsity_param = 128;
     int tensor_size = batch * seq_length * hidden_dim;
 
     float * queries = new float[tensor_size]; float * keys = new float [tensor_size]; float * values = new float[tensor_size];
     float * answer = new float[tensor_size];
+    float * l = new float[seq_length]; 
+    float * m = new float[seq_length];
+    std::memset(l, 0, seq_length);
+    std::memset(m, -1e9, seq_length);
 
     // Initialize random float values.
     matrix_fill(queries, tensor_size);
@@ -184,20 +195,27 @@ int main() {
     matrix_fill(values, tensor_size);
 
     // GPU memory.
-    float * queries_dev; float * keys_dev; float * values_dev; float * answer_dev;
+    float * queries_dev; float * keys_dev; float * values_dev; float * answer_dev; float * l_dev; float * m_dev;
     cudaMalloc(&queries_dev, sizeof(float)*tensor_size);
     cudaMalloc(&keys_dev, sizeof(float)*tensor_size);
     cudaMalloc(&values_dev, sizeof(float)*tensor_size);
     cudaMalloc(&answer_dev, sizeof(float)*tensor_size);
+    cudaMalloc(&l_dev, sizeof(float)*seq_length);
+    cudaMalloc(&m_dev, sizeof(float)*seq_length);
 
     // Copy tensors to GPU.
     cudaMemcpy(queries_dev,queries, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
     cudaMemcpy(keys_dev,keys, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
     cudaMemcpy(values_dev,values, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(answer_dev,answer, sizeof(float)*tensor_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(l_dev,l, sizeof(float)*seq_length, cudaMemcpyHostToDevice);
+    cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice);
 
+    cudaDeviceSynchronize();
     blocked_launcher(queries_dev, keys_dev, values_dev, 
-                        answer_dev, batch, num_heads, seq_length, 
+                        answer_dev,l_dev,m_dev, batch, num_heads, seq_length, 
                             hidden_dim, sparsity_param);
+    cudaDeviceSynchronize();
 
     return 0;
 }
