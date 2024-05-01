@@ -108,11 +108,11 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
         // Over here, we compute the average statistics of how sparse S_{i,j} is, delete later.
         if (blocked_is_computed(row, j*BLOCK_SIZE_X+tx, sparsity_param)) {
             atomicAdd(&num_done, 1);
-            __syncthreads();
-            // Then we add to the average sparsity.
-            if (tx == 0 && ty == 0) {
-                average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
-            }
+        }
+        __syncthreads();
+        // Then we add to the average sparsity.
+        if (tx == 0 && ty == 0) {
+            average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
         }
 
         // We first load V_j. 
@@ -211,7 +211,7 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
         }
     }
 
-    if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1)) && bz == 0) {
+    if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1)) && blockIdx.z == 0) {
         printf("blockIdx.x: %d, blockIdx.y: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, average_sparsity);
     }
 }
@@ -237,7 +237,7 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
 
 int main() {
 
-    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 128;
+    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 1024;
     int tensor_size = batch * seq_length * hidden_dim;
 
     float * queries = new float[tensor_size]; float * keys = new float [tensor_size]; float * values = new float[tensor_size];
