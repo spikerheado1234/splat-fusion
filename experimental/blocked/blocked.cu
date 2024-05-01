@@ -113,7 +113,7 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
 
         // Over here, we compute the average statistics of how sparse S_{i,j} is, delete later.
-        if (blocked_is_computed(row, j*BLOCK_SIZE_X+tx, sparsity_param)) {
+        if (windowed_is_computed(row, j*BLOCK_SIZE_X+tx, sparsity_param)) {
             atomicAdd(&num_done, 1);
         }
         __syncthreads();
