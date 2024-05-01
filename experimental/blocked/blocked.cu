@@ -249,7 +249,7 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
 
 int main() {
 
-    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 1024;
+    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 128;
     int tensor_size = batch * seq_length * hidden_dim;
 
     float * queries = new float[tensor_size]; float * keys = new float [tensor_size]; float * values = new float[tensor_size];
