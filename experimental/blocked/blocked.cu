@@ -21,6 +21,22 @@
   }                                                                 \
 }
 
+__device__ bool blocked_is_computed(int row, int col, int sparsity_parameter) {
+    // Figure out what block we are in.
+    int block_num = row / sparsity_parameter;
+
+    if (block_num < 1) {
+        return col < sparsity_parameter;
+    }
+
+    // Otherwise we have some check to make.
+    if (((block_num - 1) * sparsity_parameter) < col && col < (block_num * sparsity_parameter)) {
+        return true;
+    }
+
+    return false;
+}
+
 // Queries -> row-major, Keys^T -> row-major, Values -> row-major. [batch, num_heads, seq_length, hidden_dim].
 template<class T>
 __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
@@ -55,6 +71,15 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     __shared__ T l_tilde_ij[BLOCK_SIZE_Y];
     __shared__ T l_new_i[BLOCK_SIZE_Y]; 
 
+    // Statistics to compute how much sparsity there truly is in the fusion.
+    __shared__ float average_sparsity;
+    __shared__ int num_done;
+
+    if (tx == 0 && ty == 0) {
+        average_sparsity = 0;
+        num_done = 0;
+    } 
+
     // Initialization of: l_i, m_i. TODO: initialize O_i.
     if (tx == 0 && ty+blockDim.y*blockIdx.y < seq_length) {
         l_i[ty] = l[ty+blockDim.y*blockIdx.y];
@@ -79,6 +104,16 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
     for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
+
+        // Over here, we compute the average statistics of how sparse S_{i,j} is, delete later.
+        if (blocked_is_compute(row, j*BLOCK_SIZE_X+tx, sparsity_param)) {
+            atomicAdd(&num_done, 1);
+            __syncthreads();
+            // Then we add to the average sparsity.
+            if (tx == 0 && ty == 0) {
+                average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
+            }
+        }
 
         // We first load V_j. 
 
@@ -169,6 +204,15 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
             l_i[ty] = l_new_i[ty];
             m_i[ty] = m_new_i[ty];
         }
+
+        // Reset the num_done counter for statistics. TODO, remove later.
+        if (tx == 0 && ty == 0) {
+            num_done = 0;
+        }
+    }
+
+    if (tx == 0 && ty == 0) {
+        printf("blockIdx.x: %d, blockIdx.y: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, average_sparsity);
     }
 }
 
