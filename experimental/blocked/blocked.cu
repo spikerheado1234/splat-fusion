@@ -112,7 +112,10 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
         __syncthreads();
         // Then we add to the average sparsity.
         if (tx == 0 && ty == 0) {
-            average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
+            // This is for exp. 1.
+            //average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
+            // This is for exp. 2.
+            average_sparsity = (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y));
         }
 
         // We first load V_j. 
@@ -205,15 +208,17 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
             m_i[ty] = m_new_i[ty];
         }
 
+        if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1)) && blockIdx.z == 0) {
+            printf("blockIdx.x: %d, blockIdx.y: %d, iteration: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, j, average_sparsity);
+        }
+
         // Reset the num_done counter for statistics. TODO, remove later.
         if (tx == 0 && ty == 0) {
             num_done = 0;
+            average_sparsity = 0;
         }
     }
 
-    if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1)) && blockIdx.z == 0) {
-        printf("blockIdx.x: %d, blockIdx.y: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, average_sparsity);
-    }
 }
 
 // Now, BLOCK_SIZE_X is b_c whilst BLOCK_SIZE_Y is b_r in the flash-attention paper:
