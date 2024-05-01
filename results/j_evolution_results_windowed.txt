@@ -190,5 +190,3 @@ blockIdx.x: 0, blockIdx.y: 32, iteration: 60, sparsity: 0.000000
 blockIdx.x: 0, blockIdx.y: 32, iteration: 61, sparsity: 0.000000
 blockIdx.x: 0, blockIdx.y: 32, iteration: 62, sparsity: 0.000000
 blockIdx.x: 0, blockIdx.y: 32, iteration: 63, sparsity: 0.000000
-Time elapsed: 130588
-no error
