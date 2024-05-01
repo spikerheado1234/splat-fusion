@@ -20,6 +20,13 @@
     exit(EXIT_FAILURE);                                             \
   }                                                                 \
 }
+__device__ bool windowed_is_computed(int row, int col, int sparsity_parameter) {
+    if (row - sparsity_parameter < col && col < row + sparsity_parameter) {
+        return true;
+    }
+
+    return false;
+}
 
 __device__ bool blocked_is_computed(int row, int col, int sparsity_parameter) {
     // Figure out what block we are in.
