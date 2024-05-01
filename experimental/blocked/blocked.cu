@@ -211,7 +211,7 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
         }
     }
 
-    if (tx == 0 && ty == 0) {
+    if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1))) {
         printf("blockIdx.x: %d, blockIdx.y: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, average_sparsity);
     }
 }
