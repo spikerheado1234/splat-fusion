@@ -20,6 +20,15 @@
     exit(EXIT_FAILURE);                                             \
   }                                                                 \
 }
+
+struct coord {
+    int start_col; 
+    int end_col;
+
+    coord(int start_col, int end_col) : start_col(start_col), 
+                                        end_col(end_col) { }
+};
+
 __device__ bool windowed_is_computed(int row, int col, int sparsity_parameter) {
     if (row - sparsity_parameter < col && col < row + sparsity_parameter) {
         return true;
@@ -47,7 +56,7 @@ __device__ bool blocked_is_computed(int row, int col, int sparsity_parameter) {
 // Queries -> row-major, Keys^T -> row-major, Values -> row-major. [batch, num_heads, seq_length, hidden_dim].
 template<class T>
 __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l, T * m, int sparsity_param, int batch, 
-                            int num_heads, int seq_length, int hidden_dim) {
+                            int num_heads, int seq_length, int hidden_dim, coord* col_metadata_dev) {
 
     int head_hidden_dim = hidden_dim / num_heads;
 
@@ -73,14 +82,9 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     __shared__ T m_i[BLOCK_SIZE_Y]; 
     __shared__ T m_tilde_ij[BLOCK_SIZE_Y]; 
     __shared__ T m_new_i[BLOCK_SIZE_Y];
-    //__shared__ T l[BLOCK_SIZE_Y] = {0}; // Question, why do we even need this?
     __shared__ T l_i[BLOCK_SIZE_Y];
     __shared__ T l_tilde_ij[BLOCK_SIZE_Y];
     __shared__ T l_new_i[BLOCK_SIZE_Y]; 
-
-    // Statistics to compute how much sparsity there truly is in the fusion.
-    __shared__ float average_sparsity;
-    __shared__ int num_done;
 
     if (tx == 0 && ty == 0) {
         average_sparsity = 0;
@@ -110,20 +114,7 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     }
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
-    for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
-
-        // Over here, we compute the average statistics of how sparse S_{i,j} is, delete later.
-        if (windowed_is_computed(row, j*BLOCK_SIZE_X+tx, sparsity_param)) {
-            atomicAdd(&num_done, 1);
-        }
-        __syncthreads();
-        // Then we add to the average sparsity.
-        if (tx == 0 && ty == 0) {
-            // This is for exp. 1.
-            //average_sparsity = (average_sparsity * (j+1) + (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y)))/(j+2);
-            // This is for exp. 2.
-            average_sparsity = (float(num_done)/float(BLOCK_SIZE_X * BLOCK_SIZE_Y));
-        }
+    for (int j = col_metadata_dev[blockIdx.y].start_col; j < col_metadata_dev[blockIdx.y].end_col; j++) {
 
         // We first load V_j. 
 
@@ -214,16 +205,6 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
             l_i[ty] = l_new_i[ty];
             m_i[ty] = m_new_i[ty];
         }
-
-        if (tx == 0 && ty == 0 && (by == 0 || by == (gridDim.y / 2) || (by == gridDim.y - 1)) && blockIdx.z == 0) {
-            printf("blockIdx.x: %d, blockIdx.y: %d, iteration: %d, sparsity: %f\n", blockIdx.x, blockIdx.y, j, average_sparsity);
-        }
-
-        // Reset the num_done counter for statistics. TODO, remove later.
-        if (tx == 0 && ty == 0) {
-            num_done = 0;
-            average_sparsity = 0;
-        }
     }
 
 }
@@ -231,7 +212,8 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
 // Now, BLOCK_SIZE_X is b_c whilst BLOCK_SIZE_Y is b_r in the flash-attention paper:
 //     https://arxiv.org/pdf/2205.14135.pdf
 template<class T>
-void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev, T * l_dev, T* m_dev, int batch, int num_heads, int seq_length, int hidden_dim, int sparsity_param) {
+void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev, T * l_dev, T* m_dev, 
+                        int batch, int num_heads, int seq_length, int hidden_dim, int sparsity_param, coord* col_metadata_dev) {
 
     // Now, what's the size of of O? seq_length X hidden_dim.
     // Naive spawning.
@@ -244,8 +226,41 @@ void blocked_launcher(T* queries_dev, T* keys_dev, T* values_dev, T* answer_dev,
 
     blocked_kernel<float><<<GridSize,BlockSize>>>(queries_dev, keys_dev, values_dev, 
                                                     answer_dev, l_dev, m_dev, sparsity_param, batch, num_heads, 
-                                                    seq_length, hidden_dim); 
+                                                    seq_length, hidden_dim, col_metadata_dev); 
 }
+
+
+coord* populate_col_metadata_blocked(int s, int p, int block_height) {
+    int num_blocks = ceil(float(s)/float(block_height));
+
+    coord* metadata = (coord*)malloc(sizeof(coord)*num_blocks);
+
+    for (int i = 0; i < num_blocks; i++) {
+        // Find the start and end column within this range. 
+        int top_row = block_height*i;
+        int bottom_row = min(s-1, top_row+block_height);
+
+        // Figure out what block top_row is in.
+        int start_col = -1;
+        int end_col = -1;
+        int top_block_num = top_row / p;
+        if (top_block_num < 1) {
+            start_col = 0;
+        } else {
+            start_col = min((top_block_num-1) * p, s);
+        }
+
+        int bottom_block_num = bottom_row / p;
+        if (bottom_block_num < 1) {
+            end_col = p;
+        } else {
+            end_col = min(bottom_block_num*p + p, s);
+        }
+        metadata[i] = coord(start_col, end_col);
+    }
+
+    return metadata;
+} 
 
 int main() {
 
@@ -256,6 +271,7 @@ int main() {
     float * answer = new float[tensor_size];
     float * l = new float[seq_length]; 
     float * m = new float[seq_length];
+    coord * col_metadata = populate_col_metadata_blocked(seq_length, sparsity_param, BLOCK_SIZE_Y);
     std::memset(l, 0, seq_length);
     std::memset(m, -1e9, seq_length);
 
@@ -265,13 +281,14 @@ int main() {
     matrix_fill(values, tensor_size);
 
     // GPU memory.
-    float * queries_dev; float * keys_dev; float * values_dev; float * answer_dev; float * l_dev; float * m_dev;
+    float * queries_dev; float * keys_dev; float * values_dev; float * answer_dev; float * l_dev; float * m_dev; coord* col_metadata_dev;
     CHECK_CUDA(cudaMalloc(&queries_dev, sizeof(float)*tensor_size));
     CHECK_CUDA(cudaMalloc(&keys_dev, sizeof(float)*tensor_size));
     CHECK_CUDA(cudaMalloc(&values_dev, sizeof(float)*tensor_size));
     CHECK_CUDA(cudaMalloc(&answer_dev, sizeof(float)*tensor_size));
     CHECK_CUDA(cudaMalloc(&l_dev, sizeof(float)*seq_length));
     CHECK_CUDA(cudaMalloc(&m_dev, sizeof(float)*seq_length));
+    CHECK_CUDA(cudaMalloc(&col_metadata_dev, sizeof(coord)* int(ceil(float(s)/float(block_height))) ));
 
     // Copy tensors to GPU.
     CHECK_CUDA(cudaMemcpy(queries_dev,queries, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
@@ -280,12 +297,13 @@ int main() {
     CHECK_CUDA(cudaMemcpy(answer_dev,answer, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(l_dev,l, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(col_metadata_dev,col_metadata, sizeof(coord)*int(ceil(float(s)/float(block_height))), cudaMemcpyHostToDevice));
 
     cudaDeviceSynchronize();
     auto time_start = time_now();
     blocked_launcher(queries_dev, keys_dev, values_dev, 
                         answer_dev,l_dev,m_dev, batch, num_heads, seq_length, 
-                            hidden_dim, sparsity_param);
+                            hidden_dim, sparsity_param, col_metadata_dev);
     cudaDeviceSynchronize();
     auto time_elapsed = time_elapsed_us(time_start);
     std::cout << "Time elapsed: " << time_elapsed << std::endl;
