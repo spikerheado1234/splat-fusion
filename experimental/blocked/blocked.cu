@@ -86,11 +86,6 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     __shared__ T l_tilde_ij[BLOCK_SIZE_Y];
     __shared__ T l_new_i[BLOCK_SIZE_Y]; 
 
-    if (tx == 0 && ty == 0) {
-        average_sparsity = 0;
-        num_done = 0;
-    } 
-
     // Initialization of: l_i, m_i. TODO: initialize O_i.
     if (tx == 0 && ty+blockDim.y*blockIdx.y < seq_length) {
         l_i[ty] = l[ty+blockDim.y*blockIdx.y];
@@ -114,7 +109,10 @@ __global__ void blocked_kernel(T* queries, T* keys, T* values, T* answer, T * l,
     }
 
     // Now, we parallelize over the inner loop, but still retain the outer loop.
-    for (int j = col_metadata_dev[blockIdx.y].start_col; j < col_metadata_dev[blockIdx.y].end_col; j++) {
+    // Span-specialised loop.
+    //for (int j = col_metadata_dev[blockIdx.y].start_col; j < col_metadata_dev[blockIdx.y].end_col; j++) {
+    // Non-specialised loop.
+    for (int j = 0; j < ceil(float(seq_length) / float(BLOCK_SIZE_X)); j++) {
 
         // We first load V_j. 
 
@@ -264,7 +262,7 @@ coord* populate_col_metadata_blocked(int s, int p, int block_height) {
 
 int main() {
 
-    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 128;
+    int batch = 32; int seq_length = 1024; int num_heads = 12; int hidden_dim = 768; int sparsity_param = 256;
     int tensor_size = batch * seq_length * hidden_dim;
 
     float * queries = new float[tensor_size]; float * keys = new float [tensor_size]; float * values = new float[tensor_size];
@@ -288,7 +286,7 @@ int main() {
     CHECK_CUDA(cudaMalloc(&answer_dev, sizeof(float)*tensor_size));
     CHECK_CUDA(cudaMalloc(&l_dev, sizeof(float)*seq_length));
     CHECK_CUDA(cudaMalloc(&m_dev, sizeof(float)*seq_length));
-    CHECK_CUDA(cudaMalloc(&col_metadata_dev, sizeof(coord)* int(ceil(float(s)/float(block_height))) ));
+    CHECK_CUDA(cudaMalloc(&col_metadata_dev, sizeof(coord)* int(ceil(float(seq_length)/float(BLOCK_SIZE_Y))) ));
 
     // Copy tensors to GPU.
     CHECK_CUDA(cudaMemcpy(queries_dev,queries, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
@@ -297,7 +295,7 @@ int main() {
     CHECK_CUDA(cudaMemcpy(answer_dev,answer, sizeof(float)*tensor_size, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(l_dev,l, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(m_dev,m, sizeof(float)*seq_length, cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(col_metadata_dev,col_metadata, sizeof(coord)*int(ceil(float(s)/float(block_height))), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(col_metadata_dev,col_metadata, sizeof(coord)*int(ceil(float(seq_length)/float(BLOCK_SIZE_Y))), cudaMemcpyHostToDevice));
 
     cudaDeviceSynchronize();
     auto time_start = time_now();
